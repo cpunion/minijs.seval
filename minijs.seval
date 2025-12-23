@@ -1,0 +1,645 @@
+;;; minijs.seval - MiniJS Compiler in S-expressions
+;;; A self-hosted implementation of MiniJS using seval primitives
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Tokenizer - converts MiniJS source string to token list
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (is-whitespace ch)
+  (or (= ch " ") (= ch "\t") (= ch "\n") (= ch "\r")))
+
+(define (is-digit ch)
+  (and (>= ch "0") (<= ch "9")))
+
+(define (is-alpha ch)
+  (or (and (>= ch "a") (<= ch "z"))
+      (and (>= ch "A") (<= ch "Z"))
+      (= ch "_") (= ch "$")))
+
+(define (is-alnum ch)
+  (or (is-alpha ch) (is-digit ch)))
+
+(define (char-at str i)
+  (substr str i (+ i 1)))
+
+(define (make-token type value)
+  (obj "type" type "value" value))
+
+(define (skip-whitespace src pos)
+  (if (>= pos (strlen src))
+      pos
+      (if (is-whitespace (char-at src pos))
+          (skip-whitespace src (+ pos 1))
+          (if (and (= (char-at src pos) "/")
+                   (< (+ pos 1) (strlen src))
+                   (= (char-at src (+ pos 1)) "/"))
+              ; Line comment - skip to end of line
+              (skip-line-comment src (+ pos 2))
+              pos))))
+
+(define (skip-line-comment src pos)
+  (if (>= pos (strlen src))
+      pos
+      (if (= (char-at src pos) "\n")
+          (skip-whitespace src (+ pos 1))
+          (skip-line-comment src (+ pos 1)))))
+
+(define (read-number src pos)
+  (let ((end (read-digits src pos)))
+    (if (and (< end (strlen src))
+             (= (char-at src end) ".")
+             (< (+ end 1) (strlen src))
+             (is-digit (char-at src (+ end 1))))
+        ; Decimal number
+        (let ((decimal-end (read-digits src (+ end 1))))
+          (obj "end" decimal-end
+               "token" (make-token "Number" (parse-num (substr src pos decimal-end)))))
+        ; Integer
+        (obj "end" end
+             "token" (make-token "Number" (parse-num (substr src pos end)))))))
+
+(define (read-digits src pos)
+  (if (and (< pos (strlen src)) (is-digit (char-at src pos)))
+      (read-digits src (+ pos 1))
+      pos))
+
+(define (read-string src pos quote)
+  (let ((start (+ pos 1)))
+    (read-string-chars src start quote "")))
+
+(define (read-string-chars src pos quote acc)
+  (if (>= pos (strlen src))
+      (obj "end" pos "token" (make-token "String" acc))
+      (let ((ch (char-at src pos)))
+        (if (= ch quote)
+            (obj "end" (+ pos 1) "token" (make-token "String" acc))
+            (if (= ch "\\")
+                (let ((escaped (char-at src (+ pos 1))))
+                  (read-string-chars src (+ pos 2) quote
+                    (concat acc (cond ((= escaped "n") "\n")
+                                      ((= escaped "t") "\t")
+                                      (else escaped)))))
+                (read-string-chars src (+ pos 1) quote (concat acc ch)))))))
+
+(define (read-identifier src pos)
+  (let ((end (read-id-chars src pos)))
+    (let ((name (substr src pos end)))
+      (obj "end" end
+           "token" (cond ((= name "true") (make-token "Boolean" true))
+                         ((= name "false") (make-token "Boolean" false))
+                         ((= name "null") (make-token "Null" null))
+                         (else (make-token "Identifier" name)))))))
+
+(define (read-id-chars src pos)
+  (if (and (< pos (strlen src)) (is-alnum (char-at src pos)))
+      (read-id-chars src (+ pos 1))
+      pos))
+
+(define (tokenize-one src pos)
+  (let ((ch (char-at src pos)))
+    (cond
+      ; String
+      ((or (= ch "\"") (= ch "'"))
+       (read-string src pos ch))
+
+      ; Number
+      ((is-digit ch)
+       (read-number src pos))
+
+      ; Identifier
+      ((is-alpha ch)
+       (read-identifier src pos))
+
+      ; Two-char operators
+      ((and (= ch "=") (< (+ pos 1) (strlen src)) (= (char-at src (+ pos 1)) ">"))
+       (obj "end" (+ pos 2) "token" (make-token "Arrow" "=>")))
+      ((and (= ch "=") (< (+ pos 1) (strlen src)) (= (char-at src (+ pos 1)) "="))
+       (obj "end" (+ pos 2) "token" (make-token "Equal" "==")))
+      ((and (= ch "!") (< (+ pos 1) (strlen src)) (= (char-at src (+ pos 1)) "="))
+       (obj "end" (+ pos 2) "token" (make-token "NotEqual" "!=")))
+      ((and (= ch "<") (< (+ pos 1) (strlen src)) (= (char-at src (+ pos 1)) "="))
+       (obj "end" (+ pos 2) "token" (make-token "LessEqual" "<=")))
+      ((and (= ch ">") (< (+ pos 1) (strlen src)) (= (char-at src (+ pos 1)) "="))
+       (obj "end" (+ pos 2) "token" (make-token "GreaterEqual" ">=")))
+      ((and (= ch "&") (< (+ pos 1) (strlen src)) (= (char-at src (+ pos 1)) "&"))
+       (obj "end" (+ pos 2) "token" (make-token "And" "&&")))
+      ((and (= ch "|") (< (+ pos 1) (strlen src)) (= (char-at src (+ pos 1)) "|"))
+       (obj "end" (+ pos 2) "token" (make-token "Or" "||")))
+
+      ; Single-char operators
+      ((= ch "+") (obj "end" (+ pos 1) "token" (make-token "Plus" "+")))
+      ((= ch "-") (obj "end" (+ pos 1) "token" (make-token "Minus" "-")))
+      ((= ch "*") (obj "end" (+ pos 1) "token" (make-token "Star" "*")))
+      ((= ch "/") (obj "end" (+ pos 1) "token" (make-token "Slash" "/")))
+      ((= ch "%") (obj "end" (+ pos 1) "token" (make-token "Percent" "%")))
+      ((= ch "<") (obj "end" (+ pos 1) "token" (make-token "Less" "<")))
+      ((= ch ">") (obj "end" (+ pos 1) "token" (make-token "Greater" ">")))
+      ((= ch "!") (obj "end" (+ pos 1) "token" (make-token "Not" "!")))
+      ((= ch "?") (obj "end" (+ pos 1) "token" (make-token "Question" "?")))
+      ((= ch ":") (obj "end" (+ pos 1) "token" (make-token "Colon" ":")))
+      ((= ch ".") (obj "end" (+ pos 1) "token" (make-token "Dot" ".")))
+      ((= ch "(") (obj "end" (+ pos 1) "token" (make-token "LeftParen" "(")))
+      ((= ch ")") (obj "end" (+ pos 1) "token" (make-token "RightParen" ")")))
+      ((= ch "{") (obj "end" (+ pos 1) "token" (make-token "LeftBrace" "{")))
+      ((= ch "}") (obj "end" (+ pos 1) "token" (make-token "RightBrace" "}")))
+      ((= ch "[") (obj "end" (+ pos 1) "token" (make-token "LeftBracket" "[")))
+      ((= ch "]") (obj "end" (+ pos 1) "token" (make-token "RightBracket" "]")))
+      ((= ch ",") (obj "end" (+ pos 1) "token" (make-token "Comma" ",")))
+      (else (obj "end" (+ pos 1) "token" (make-token "Unknown" ch))))))
+
+(define (tokenize-loop src pos tokens)
+  (let ((pos2 (skip-whitespace src pos)))
+    (if (>= pos2 (strlen src))
+        (append tokens (make-token "EOF" ""))
+        (let ((result (tokenize-one src pos2)))
+          (tokenize-loop src (get result "end")
+                         (append tokens (get result "token")))))))
+
+(define (tokenize src)
+  (tokenize-loop src 0 (list)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Parser - converts token list to AST
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (current-token tokens pos)
+  (nth tokens pos))
+
+(define (token-type tok)
+  (get tok "type"))
+
+(define (token-value tok)
+  (get tok "value"))
+
+(define (make-literal val)
+  (obj "type" "Literal" "value" val))
+
+(define (make-identifier name)
+  (obj "type" "Identifier" "name" name))
+
+(define (make-binary op left right)
+  (obj "type" "Binary" "operator" op "left" left "right" right))
+
+(define (make-unary op arg)
+  (obj "type" "Unary" "operator" op "argument" arg))
+
+(define (make-call callee args)
+  (obj "type" "Call" "callee" callee "arguments" args))
+
+(define (make-member obj prop computed)
+  (obj "type" "Member" "object" obj "property" prop "computed" computed))
+
+(define (make-conditional test conseq alt)
+  (obj "type" "Conditional" "test" test "consequent" conseq "alternate" alt))
+
+(define (make-arrow params body)
+  (obj "type" "ArrowFunction" "params" params "body" body))
+
+(define (make-array elements)
+  (obj "type" "Array" "elements" elements))
+
+(define (make-object properties)
+  (obj "type" "Object" "properties" properties))
+
+(define (make-property key value is-method params)
+  (obj "key" key "value" value "method" is-method "params" params))
+
+(define (make-assignment name value)
+  (obj "type" "Assignment" "name" name "value" value))
+
+(define (make-block statements)
+  (obj "type" "Block" "statements" statements))
+
+;;; Parser state is (pos . ast)
+(define (parse-expr tokens pos)
+  (parse-ternary tokens pos))
+
+(define (parse-ternary tokens pos)
+  (let ((left-result (parse-or tokens pos)))
+    (let ((left (first left-result))
+          (pos2 (first (rest left-result))))
+      (if (= (token-type (current-token tokens pos2)) "Question")
+          (let ((conseq-result (parse-expr tokens (+ pos2 1))))
+            (let ((conseq (first conseq-result))
+                  (pos3 (first (rest conseq-result))))
+              (if (= (token-type (current-token tokens pos3)) "Colon")
+                  (let ((alt-result (parse-expr tokens (+ pos3 1))))
+                    (let ((alt (first alt-result))
+                          (pos4 (first (rest alt-result))))
+                      (list (make-conditional left conseq alt) pos4)))
+                  (list left pos2))))
+          (list left pos2)))))
+
+(define (parse-or tokens pos)
+  (parse-binary-left tokens pos parse-and (list "Or") (list "or")))
+
+(define (parse-and tokens pos)
+  (parse-binary-left tokens pos parse-equality (list "And") (list "and")))
+
+(define (parse-equality tokens pos)
+  (parse-binary-left tokens pos parse-comparison (list "Equal" "NotEqual") (list "=" "!=")))
+
+(define (parse-comparison tokens pos)
+  (parse-binary-left tokens pos parse-additive
+                     (list "Less" "Greater" "LessEqual" "GreaterEqual")
+                     (list "<" ">" "<=" ">=")))
+
+(define (parse-additive tokens pos)
+  (parse-binary-left tokens pos parse-multiplicative (list "Plus" "Minus") (list "+" "-")))
+
+(define (parse-multiplicative tokens pos)
+  (parse-binary-left tokens pos parse-unary (list "Star" "Slash" "Percent") (list "*" "/" "%")))
+
+(define (parse-binary-left tokens pos next-fn types ops)
+  (let ((left-result (next-fn tokens pos)))
+    (parse-binary-loop tokens left-result types ops next-fn)))
+
+(define (parse-binary-loop tokens result types ops next-fn)
+  (let ((left (first result))
+        (pos (first (rest result))))
+    (let ((tok (current-token tokens pos)))
+      (let ((type-idx (index-of types (token-type tok))))
+        (if (>= type-idx 0)
+            (let ((op (nth ops type-idx)))
+              (let ((right-result (next-fn tokens (+ pos 1))))
+                (let ((right (first right-result))
+                      (pos2 (first (rest right-result))))
+                  (parse-binary-loop tokens
+                                     (list (make-binary op left right) pos2)
+                                     types ops next-fn))))
+            result)))))
+
+(define (parse-unary tokens pos)
+  (let ((tok (current-token tokens pos)))
+    (cond
+      ((= (token-type tok) "Not")
+       (let ((arg-result (parse-unary tokens (+ pos 1))))
+         (let ((arg (first arg-result))
+               (pos2 (first (rest arg-result))))
+           (list (make-unary "not" arg) pos2))))
+      ((= (token-type tok) "Minus")
+       (let ((arg-result (parse-unary tokens (+ pos 1))))
+         (let ((arg (first arg-result))
+               (pos2 (first (rest arg-result))))
+           (list (make-unary "-" arg) pos2))))
+      (else (parse-postfix tokens pos)))))
+
+(define (parse-postfix tokens pos)
+  (let ((primary-result (parse-primary tokens pos)))
+    (parse-postfix-loop tokens primary-result)))
+
+(define (parse-postfix-loop tokens result)
+  (let ((expr (first result))
+        (pos (first (rest result))))
+    (let ((tok (current-token tokens pos)))
+      (cond
+        ; Dot access: expr.prop
+        ((= (token-type tok) "Dot")
+         (let ((prop-tok (current-token tokens (+ pos 1))))
+           (let ((prop (make-literal (token-value prop-tok))))
+             (parse-postfix-loop tokens
+                                 (list (make-member expr prop false) (+ pos 2))))))
+        ; Bracket access: expr[idx]
+        ((= (token-type tok) "LeftBracket")
+         (let ((idx-result (parse-expr tokens (+ pos 1))))
+           (let ((idx (first idx-result))
+                 (pos2 (first (rest idx-result))))
+             (parse-postfix-loop tokens
+                                 (list (make-member expr idx true) (+ pos2 1))))))
+        ; Function call: expr(args)
+        ((= (token-type tok) "LeftParen")
+         (let ((args-result (parse-args tokens (+ pos 1))))
+           (let ((args (first args-result))
+                 (pos2 (first (rest args-result))))
+             (parse-postfix-loop tokens
+                                 (list (make-call expr args) pos2)))))
+        (else result)))))
+
+(define (parse-args tokens pos)
+  (if (= (token-type (current-token tokens pos)) "RightParen")
+      (list (list) (+ pos 1))
+      (let ((first-result (parse-expr tokens pos)))
+        (let ((first-arg (first first-result))
+              (pos2 (first (rest first-result))))
+          (parse-args-loop tokens pos2 (list first-arg))))))
+
+(define (parse-args-loop tokens pos args)
+  (if (= (token-type (current-token tokens pos)) "Comma")
+      (let ((arg-result (parse-expr tokens (+ pos 1))))
+        (let ((arg (first arg-result))
+              (pos2 (first (rest arg-result))))
+          (parse-args-loop tokens pos2 (append args arg))))
+      (list args (+ pos 1))))
+
+(define (parse-primary tokens pos)
+  (let ((tok (current-token tokens pos)))
+    (cond
+      ; Literals
+      ((= (token-type tok) "Number")
+       (list (make-literal (token-value tok)) (+ pos 1)))
+      ((= (token-type tok) "String")
+       (list (make-literal (token-value tok)) (+ pos 1)))
+      ((= (token-type tok) "Boolean")
+       (list (make-literal (token-value tok)) (+ pos 1)))
+      ((= (token-type tok) "Null")
+       (list (make-literal null) (+ pos 1)))
+
+      ; Identifier (may be arrow function)
+      ((= (token-type tok) "Identifier")
+       (if (= (token-type (current-token tokens (+ pos 1))) "Arrow")
+           ; Single param arrow: x => body
+           (let ((body-result (parse-expr tokens (+ pos 2))))
+             (let ((body (first body-result))
+                   (pos2 (first (rest body-result))))
+               (list (make-arrow (list (token-value tok)) body) pos2)))
+           (list (make-identifier (token-value tok)) (+ pos 1))))
+
+      ; Parenthesized expression or arrow function
+      ((= (token-type tok) "LeftParen")
+       (parse-paren tokens (+ pos 1)))
+
+      ; Array literal
+      ((= (token-type tok) "LeftBracket")
+       (parse-array tokens (+ pos 1)))
+
+      ; Object literal
+      ((= (token-type tok) "LeftBrace")
+       (parse-object tokens (+ pos 1)))
+
+      (else (list (make-literal null) pos)))))
+
+(define (parse-paren tokens pos)
+  (if (= (token-type (current-token tokens pos)) "RightParen")
+      ; () => ... empty params arrow
+      (if (= (token-type (current-token tokens (+ pos 1))) "Arrow")
+          (let ((body-result (parse-expr tokens (+ pos 2))))
+            (let ((body (first body-result))
+                  (pos2 (first (rest body-result))))
+              (list (make-arrow (list) body) pos2)))
+          (list (make-literal null) (+ pos 1)))
+      ; Expression or multi-param arrow
+      (let ((first-result (parse-expr tokens pos)))
+        (let ((first-expr (first first-result))
+              (pos2 (first (rest first-result))))
+          (cond
+            ; Multi-param arrow: (a, b) => ...
+            ((and (= (token-type (current-token tokens pos2)) "Comma")
+                  (= (get first-expr "type") "Identifier"))
+             (parse-arrow-params tokens pos2 (list (get first-expr "name"))))
+            ; Grouped expression
+            ((= (token-type (current-token tokens pos2)) "RightParen")
+             ; Check for single-param arrow: (x) => ...
+             (if (and (= (token-type (current-token tokens (+ pos2 1))) "Arrow")
+                      (= (get first-expr "type") "Identifier"))
+                 (let ((body-result (parse-expr tokens (+ pos2 2))))
+                   (let ((body (first body-result))
+                         (pos3 (first (rest body-result))))
+                     (list (make-arrow (list (get first-expr "name")) body) pos3)))
+                 (list first-expr (+ pos2 1))))
+            (else (list first-expr pos2)))))))
+
+(define (parse-arrow-params tokens pos params)
+  (if (= (token-type (current-token tokens pos)) "Comma")
+      (let ((param-tok (current-token tokens (+ pos 1))))
+        (parse-arrow-params tokens (+ pos 2) (append params (token-value param-tok))))
+      ; pos should be at )
+      (if (= (token-type (current-token tokens (+ pos 1))) "Arrow")
+          (let ((body-result (parse-expr tokens (+ pos 2))))
+            (let ((body (first body-result))
+                  (pos2 (first (rest body-result))))
+              (list (make-arrow params body) pos2)))
+          (list (make-literal null) pos))))
+
+(define (parse-array tokens pos)
+  (if (= (token-type (current-token tokens pos)) "RightBracket")
+      (list (make-array (list)) (+ pos 1))
+      (let ((first-result (parse-expr tokens pos)))
+        (let ((first-elem (first first-result))
+              (pos2 (first (rest first-result))))
+          (parse-array-loop tokens pos2 (list first-elem))))))
+
+(define (parse-array-loop tokens pos elements)
+  (if (= (token-type (current-token tokens pos)) "Comma")
+      (let ((elem-result (parse-expr tokens (+ pos 1))))
+        (let ((elem (first elem-result))
+              (pos2 (first (rest elem-result))))
+          (parse-array-loop tokens pos2 (append elements elem))))
+      (list (make-array elements) (+ pos 1))))
+
+;;; Object literal parsing: { name(params) { body }, ... }
+(define (parse-object tokens pos)
+  (if (= (token-type (current-token tokens pos)) "RightBrace")
+      (list (make-object (list)) (+ pos 1))
+      (let ((first-prop (parse-property tokens pos)))
+        (let ((prop (first first-prop))
+              (pos2 (first (rest first-prop))))
+          (parse-object-loop tokens pos2 (list prop))))))
+
+(define (parse-object-loop tokens pos props)
+  (cond
+    ((= (token-type (current-token tokens pos)) "RightBrace")
+     (list (make-object props) (+ pos 1)))
+    ((= (token-type (current-token tokens pos)) "Comma")
+     (let ((prop-result (parse-property tokens (+ pos 1))))
+       (let ((prop (first prop-result))
+             (pos2 (first (rest prop-result))))
+         (parse-object-loop tokens pos2 (append props prop)))))
+    (else
+     ; No comma - might be newline separated or end of object
+     (list (make-object props) pos))))
+
+;;; Parse a single property: name(params) { body } or name: value
+(define (parse-property tokens pos)
+  (let ((name-tok (current-token tokens pos)))
+    (if (!= (token-type name-tok) "Identifier")
+        (list (make-property "" (make-literal null) false (list)) pos)
+        (let ((name (token-value name-tok))
+              (next-tok (current-token tokens (+ pos 1))))
+          (cond
+            ; Method: name(params) { body }
+            ((= (token-type next-tok) "LeftParen")
+             (let ((params-result (parse-method-params tokens (+ pos 2))))
+               (let ((params (first params-result))
+                     (pos2 (first (rest params-result))))
+                 ; Expect LeftBrace for method body
+                 (if (= (token-type (current-token tokens pos2)) "LeftBrace")
+                     (let ((body-result (parse-method-body tokens (+ pos2 1))))
+                       (let ((body (first body-result))
+                             (pos3 (first (rest body-result))))
+                         (list (make-property name body true params) pos3)))
+                     (list (make-property name (make-literal null) true params) pos2)))))
+            ; Property: name: value
+            ((= (token-type next-tok) "Colon")
+             (let ((value-result (parse-expr tokens (+ pos 2))))
+               (let ((value (first value-result))
+                     (pos2 (first (rest value-result))))
+                 (list (make-property name value false (list)) pos2))))
+            ; Just identifier
+            (else
+             (list (make-property name (make-literal null) false (list)) (+ pos 1))))))))
+
+;;; Parse method parameters: a, b, c)
+(define (parse-method-params tokens pos)
+  (if (= (token-type (current-token tokens pos)) "RightParen")
+      (list (list) (+ pos 1))
+      (let ((first-tok (current-token tokens pos)))
+        (if (= (token-type first-tok) "Identifier")
+            (parse-method-params-loop tokens (+ pos 1) (list (token-value first-tok)))
+            (list (list) pos)))))
+
+(define (parse-method-params-loop tokens pos params)
+  (if (= (token-type (current-token tokens pos)) "Comma")
+      (let ((param-tok (current-token tokens (+ pos 1))))
+        (if (= (token-type param-tok) "Identifier")
+            (parse-method-params-loop tokens (+ pos 2) (append params (token-value param-tok)))
+            (list params pos)))
+      ; Should be RightParen
+      (list params (+ pos 1))))
+
+;;; Parse method body: statement1 \n statement2 \n ... }
+;;; Supports multi-line bodies - returns Block with statements
+(define (parse-method-body tokens pos)
+  (parse-statements tokens pos (list)))
+
+(define (parse-statements tokens pos stmts)
+  (cond
+    ; End of body
+    ((= (token-type (current-token tokens pos)) "RightBrace")
+     (if (= (length stmts) 0)
+         (list (make-literal null) (+ pos 1))
+         (if (= (length stmts) 1)
+             (list (first stmts) (+ pos 1))
+             (list (make-block stmts) (+ pos 1)))))
+    ; EOF
+    ((= (token-type (current-token tokens pos)) "EOF")
+     (if (= (length stmts) 0)
+         (list (make-literal null) pos)
+         (if (= (length stmts) 1)
+             (list (first stmts) pos)
+             (list (make-block stmts) pos))))
+    ; Parse a statement (expression or assignment)
+    (else
+     (let ((stmt-result (parse-statement tokens pos)))
+       (let ((stmt (first stmt-result))
+             (pos2 (first (rest stmt-result))))
+         (parse-statements tokens pos2 (append stmts stmt)))))))
+
+;;; Parse a single statement: may be assignment (x = expr) or expression
+(define (parse-statement tokens pos)
+  (let ((tok (current-token tokens pos)))
+    ; Check for assignment: identifier = expr
+    (if (and (= (token-type tok) "Identifier")
+             (< (+ pos 1) (length tokens))
+             (= (token-value (current-token tokens (+ pos 1))) "=")
+             (!= (token-value (current-token tokens (+ pos 2))) "="))
+        ; Assignment: name = value
+        (let ((name (token-value tok))
+              (value-result (parse-expr tokens (+ pos 2))))
+          (let ((value (first value-result))
+                (pos2 (first (rest value-result))))
+            (list (make-assignment name value) pos2)))
+        ; Regular expression
+        (parse-expr tokens pos))))
+
+(define (parse src)
+  (let ((tokens (tokenize src)))
+    (let ((result (parse-expr tokens 0)))
+      (first result))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Transformer - converts AST to S-expression
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (transform ast)
+  (let ((type (get ast "type")))
+    (cond
+      ((= type "Literal")
+       ; For string literals, wrap with quote to prevent variable lookup
+       (let ((val (get ast "value")))
+         (if (string? val)
+             (list "quote" val)
+             val)))
+
+      ((= type "Identifier")
+       (get ast "name"))
+
+      ((= type "Binary")
+       (list (get ast "operator")
+             (transform (get ast "left"))
+             (transform (get ast "right"))))
+
+      ((= type "Unary")
+       (if (= (get ast "operator") "-")
+           (list "-" 0 (transform (get ast "argument")))
+           (list (get ast "operator") (transform (get ast "argument")))))
+
+      ((= type "Call")
+       (let ((callee (transform (get ast "callee")))
+             (args (map (lambda (a) (transform a)) (get ast "arguments"))))
+         (prepend args callee)))
+
+      ((= type "Member")
+       (list "get"
+             (transform (get ast "object"))
+             (transform (get ast "property"))))
+
+      ((= type "Conditional")
+       (list "if"
+             (transform (get ast "test"))
+             (transform (get ast "consequent"))
+             (transform (get ast "alternate"))))
+
+      ((= type "ArrowFunction")
+       (list "lambda"
+             (get ast "params")
+             (transform (get ast "body"))))
+
+      ((= type "Array")
+       (prepend (map (lambda (e) (transform e)) (get ast "elements")) "list"))
+
+      ((= type "Object")
+       (transform-object (get ast "properties")))
+
+      ((= type "Block")
+       (prepend (map (lambda (s) (transform s)) (get ast "statements")) "progn"))
+
+      ((= type "Assignment")
+       (list "define" (get ast "name") (transform (get ast "value"))))
+
+      (else null))))
+
+;;; Transform object properties to progn with defines
+(define (transform-object props)
+  (let ((defines (map transform-property props)))
+    (if (= (length defines) 1)
+        (first defines)
+        (prepend defines "progn"))))
+
+(define (transform-property prop)
+  (let ((key (get prop "key"))
+        (value (get prop "value"))
+        (is-method (get prop "method"))
+        (params (get prop "params")))
+    (if is-method
+        ; Method: (define (name params...) body)
+        (list "define" (prepend params key) (transform value))
+        ; Property: (define name value)
+        (list "define" key (transform value)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Compiler - main entry point
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (compile-to-sexpr src)
+  (transform (parse src)))
+
+(define (minijs src)
+  (compile-to-sexpr src))
+
+;;; Export the main functions
+(progn
+  (define compile-to-sexpr compile-to-sexpr)
+  (define minijs minijs)
+  (define tokenize tokenize)
+  (define parse parse)
+  (define transform transform))
