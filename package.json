@@ -1,6 +1,6 @@
 {
 	"name": "minijs-seval",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "MiniJS compiler written in S-expressions, self-hosted on seval",
 	"type": "module",
 	"main": "minijs.seval",
@@ -37,7 +37,7 @@
 		"url": "https://github.com/cpunion/minijs.seval.git"
 	},
 	"dependencies": {
-		"seval.js": "file:../seval.js"
+		"seval.js": "^1.2.1"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",
