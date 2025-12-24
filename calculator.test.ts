@@ -18,7 +18,7 @@ import {
 
 const minijsSeval = fs.readFileSync(path.join(__dirname, 'minijs.seval'), 'utf-8')
 const calculatorCode = fs.readFileSync(
-	path.join(__dirname, '../a2ui-demo/src/data/calculator.minijs'),
+	path.join(__dirname, 'fixtures/calculator.minijs'),
 	'utf-8',
 )
 

@@ -1,0 +1,46 @@
+{
+  hasDecimal(s) { strContains(str(s), ".") },
+  negateStr(s) { s == "0" ? "0" : strStartsWith(s, "-") ? substr(s, 1) : "-" + s },
+  formatNum(n) { str(round(n * 1000000000) / 1000000000) },
+  calcOp(op, a, b) {
+    formatNum(
+      op == "+" ? parseNum(a) + parseNum(b) :
+      op == "-" ? parseNum(a) - parseNum(b) :
+      op == "*" ? parseNum(a) * parseNum(b) :
+      op == "/" ? (parseNum(b) == 0 ? 0 : parseNum(a) / parseNum(b)) :
+      parseNum(b)
+    )
+  },
+
+  action_digit() {
+    waitingForOperand
+      ? [["display", str(get(context, "digit"))], ["waitingForOperand", false]]
+      : [["display", display + str(get(context, "digit"))]]
+  },
+
+  action_decimal() {
+    waitingForOperand
+      ? [["display", "0."], ["waitingForOperand", false]]
+      : hasDecimal(display) ? [] : [["display", display + "."]]
+  },
+
+  action_clear() {
+    [["display", "0"], ["memory", "0"], ["operator", ""], ["waitingForOperand", true], ["history", ""]]
+  },
+
+  action_negate() { [["display", negateStr(display)]] },
+
+  action_percent() { [["display", formatNum(parseNum(display) / 100)]] },
+
+  action_operator() {
+    operator == ""
+      ? [["memory", display], ["operator", get(context, "op")], ["waitingForOperand", true], ["history", display + " " + get(context, "op")]]
+      : [["display", calcOp(operator, memory, display)], ["memory", calcOp(operator, memory, display)], ["operator", get(context, "op")], ["waitingForOperand", true], ["history", calcOp(operator, memory, display) + " " + get(context, "op")]]
+  },
+
+  action_equals() {
+    operator == ""
+      ? []
+      : [["display", calcOp(operator, memory, display)], ["memory", "0"], ["operator", ""], ["waitingForOperand", true], ["history", history + " " + display + " = " + calcOp(operator, memory, display)]]
+  }
+}
