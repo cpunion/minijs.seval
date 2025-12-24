@@ -77,9 +77,23 @@ const sexpr = deserializeSExpr(
 )
 
 evaluate(sexpr, env)
-const uiEnv = { ...env, display: '5', waitingForOperand: false, context: { digit: 9 } }
-const updates = evalString('(action_digit)', uiEnv)
-// => [['display', '59']]
+
+// Initial state comes from the MiniJS object literal
+Object.assign(env, {
+  display: '0',
+  memory: '0',
+  operator: '',
+  waitingForOperand: true,
+  history: '',
+})
+
+evalString('(action_digit 5)', env)
+evalString('(action_operator "+")', env)
+evalString('(action_digit 3)', env)
+evalString('(action_equals)', env)
+
+console.log(env.display) // "8"
+console.log(env.history) // "5 + 3 = 8"
 ```
 
 ## Scripts
@@ -100,10 +114,52 @@ MiniJS mirrors a subset of modern JavaScript tailored for UI-dsl style programs:
 - **Expressions**: binary arithmetic (`+ - * / %`), comparisons, logical ops, ternaries, unary negation.
 - **Functions**: arrow expressions `x => x + 1` or multiline blocks `(a, b) => { ... }`.
 - **Arrays / Objects**: `[1, 2]`, nested arrays, objects with properties or method definitions `{ calc(x) { x + 1 } }`.
-- **Control**: ternaries, implicit returns from block bodies, method bodies composed of sequential statements.
+- **Component State**: top-level properties such as `display: "0"` compile to `(define display "0")`. Methods mutate these bindings directly via `display = "42"`.
+- **Control Flow**: `if / elif / else` blocks and C-style `for (init; test; update) { ... }` loops for readable logic.
 - **Member access**: dot access, bracket access, method calls, nested property lookups.
 
-Everything is lowered into S-expressions such as `(lambda (x) (+ x 1))`, making it easy to interpret inside seval.js or any Scheme/Lisp-like host.
+Everything is lowered into S-expressions such as `(lambda (x) (+ x 1))`, making it easy to interpret inside seval.js or any Scheme/Lisp-like host.  
+Instead of returning update lists, MiniJS programs mutate the evaluator environment: define your state once and let action handlers update those bindings.
+
+Example snippet from the bundled calculator:
+
+```javascript
+{
+  display: "0",
+  memory: "0",
+  operator: "",
+  waitingForOperand: true,
+  history: "",
+
+  hasDecimal(s) { strContains(str(s), ".") },
+  negateStr(s) { s == "0" ? "0" : strStartsWith(s, "-") ? substr(s, 1) : "-" + s },
+
+  action_digit(digit) {
+    if waitingForOperand {
+      display = str(digit)
+      waitingForOperand = false
+    } else {
+      display = display + str(digit)
+    }
+  },
+
+  action_operator(op) {
+    if operator == "" {
+      memory = display
+      operator = op
+      waitingForOperand = true
+      history = display + " " + op
+    } else {
+      result = calcOp(operator, memory, display)
+      display = result
+      memory = result
+      operator = op
+      waitingForOperand = true
+      history = result + " " + op
+    }
+  }
+}
+```
 
 ### Built-in Helpers
 
@@ -111,7 +167,7 @@ When compiling MiniJS you typically expose these primitives to the runtime:
 
 - **String/number helpers**: `parseNum`, `str`, `strContains`, `strStartsWith`, `substr`, `round`.
 - **Collection helpers**: seval's `list`, `append`, `obj`, `get`, `set`, etc.
-- **Control constructs**: `if`, `cond`, `progn`, `define`, `lambda`, `let`, already provided by seval.js.
+- **Control constructs**: `if`, `cond`, `progn`, `define`, `lambda`, `let`, `for`, already provided by seval.js.
 - **Domain-specific primitives**: e.g. calculator operations bundled via `calculatorPrimitives` inside the tests.
 
 Register additional primitives via `createEvaluator({ primitives: { ... } })` to match the APIs your MiniJS program expects.

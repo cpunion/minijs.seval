@@ -11,13 +11,14 @@ import {
 	type Value,
 	type ValueObject,
 	createEvaluator,
+	deserializeSExpr,
 } from 'seval.js'
 
 // Load and evaluate minijs.seval to get the compiler functions
 const minijsSeval = readFileSync(join(__dirname, './minijs.seval'), 'utf-8')
 
 // Create evaluator with higher depth limit for complex code
-const { evalString } = createEvaluator({ maxDepth: 10000 })
+const { evalString, evaluate } = createEvaluator({ maxDepth: 10000 })
 
 function loadMinijsCompiler(): Environment {
 	const env: Environment = {}
@@ -125,16 +126,29 @@ describe('minijs.seval - Self-hosted MiniJS Compiler', () => {
 			expect(result).toEqual(['list', ['list', ['quote', 'display'], ['quote', '9']]])
 		})
 
-		it('transforms action return format', () => {
-			const result = evalString(
-				'(compile-to-sexpr "[[\\"display\\", \\"9\\"], [\\"waitingForOperand\\", false]]")',
-				env,
-			)
-			expect(result).toEqual([
-				'list',
-				['list', ['quote', 'display'], ['quote', '9']],
-				['list', ['quote', 'waitingForOperand'], false],
-			])
+		it('transforms if/elif/else statements', () => {
+			const code = `{
+        action() {
+          if waitingForOperand {
+            display = "0"
+            waitingForOperand = false
+          } elif operator == "" {
+            operator = "+"
+          } else {
+            history = ""
+          }
+        }
+      }`
+			const expr = `(compile-to-sexpr "${code.replace(/"/g, '\\"').replace(/\n/g, '\\n')}")`
+			const result = evalSExpr(expr) as Value[]
+			expect(result[0]).toBe('define')
+			const body = result[2] as Value[]
+			expect(body[0]).toBe('if')
+			expect(body[1]).toBe('waitingForOperand')
+			const firstBranch = body[2] as Value[]
+			expect(firstBranch[0]).toBe('progn')
+			const elifBranch = body[3] as Value[]
+			expect(elifBranch[0]).toBe('if')
 		})
 	})
 
@@ -264,6 +278,27 @@ describe('minijs.seval - Self-hosted MiniJS Compiler', () => {
 			const expr = `(compile-to-sexpr "${code}")`
 			const result = evalSExpr(expr) as Value[]
 			expect(result).toEqual(['define', ['add', 'a', 'b'], ['+', 'a', 'b']])
+		})
+	})
+
+	describe('Control Flow Enhancements', () => {
+		it('executes for loops and updates state', () => {
+			const loopEnv = loadMinijsCompiler()
+			const code = `{
+        total: 0,
+        sum() {
+          total = 0
+          for (i = 0; i < 3; i = i + 1) {
+            total = total + i
+          }
+        }
+      }`
+			const expr = `(compile-to-sexpr "${code.replace(/"/g, '\\"').replace(/\n/g, '\\n')}")`
+			const programRaw = evalString(expr, loopEnv) as Value
+			const program = deserializeSExpr(programRaw)
+			evaluate(program as SExpr, loopEnv)
+			evalString('(sum)', loopEnv)
+			expect(loopEnv.total).toBe(3)
 		})
 	})
 })

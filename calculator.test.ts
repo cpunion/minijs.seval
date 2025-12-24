@@ -2,7 +2,7 @@
  * Calculator MiniJS Unit Tests
  * Tests the calculator logic by compiling and evaluating the MiniJS code
  */
-import { beforeAll, describe, expect, it } from 'bun:test'
+import { beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -10,7 +10,6 @@ import {
 	type PrimitiveFunction,
 	type SExpr,
 	type Value,
-	type ValueObject,
 	createEvaluator,
 	deserializeSExpr,
 	serializeSExpr,
@@ -20,14 +19,6 @@ const minijsSeval = fs.readFileSync(path.join(__dirname, 'minijs.seval'), 'utf-8
 const calculatorCode = fs.readFileSync(path.join(__dirname, 'fixtures/calculator.minijs'), 'utf-8')
 
 // Custom primitives that calculator.minijs depends on
-
-type UpdateEntry = [string, Value]
-type UpdateList = UpdateEntry[]
-
-const createTestEnv = (overrides: ValueObject = {}): Environment => ({
-	...env,
-	...overrides,
-})
 
 const calculatorPrimitives: Record<string, PrimitiveFunction> = {
 	parseNum: (args: Value[]) => Number.parseFloat(String(args[0])) || 0,
@@ -46,6 +37,20 @@ const { evalString, evaluate } = createEvaluator({
 
 const env: Environment = {}
 
+const assignState = (state: Partial<Record<string, Value>>) => {
+	Object.assign(env, state)
+}
+
+const resetState = () => {
+	assignState({
+		display: '0',
+		memory: '0',
+		operator: '',
+		waitingForOperand: true,
+		history: '',
+	})
+}
+
 beforeAll(() => {
 	// Load the minijs.seval compiler
 	evalString(`(progn ${minijsSeval})`, env)
@@ -60,6 +65,12 @@ beforeAll(() => {
 
 	// Evaluate the S-expr to define all functions
 	evaluate(sexpr as SExpr, env)
+
+	resetState()
+})
+
+beforeEach(() => {
+	resetState()
 })
 
 describe('Calculator Logic', () => {
@@ -101,124 +112,283 @@ describe('Calculator Logic', () => {
 			const div = evalString('(calcOp "/" "10" "5")', env)
 			expect(div).toBe('2')
 		})
+
+		it('calcOp handles division by zero', () => {
+			const divZero = evalString('(calcOp "/" "10" "0")', env)
+			expect(divZero).toBe('0')
+		})
+
+		it('calcOp handles unknown operator', () => {
+			const unknown = evalString('(calcOp "^" "10" "5")', env)
+			expect(unknown).toBe('5')
+		})
 	})
 
 	describe('Action Functions', () => {
 		it('action_digit adds digit when not waiting', () => {
-			// Setup: display="5", waitingForOperand=false
-			const testEnv = createTestEnv({
+			assignState({
 				display: '5',
 				waitingForOperand: false,
-				context: { digit: 9 } as Value,
 			})
-			const result = evalString('(action_digit)', testEnv) as UpdateList
-			// Should append "9" to display
-			expect(result).toContainEqual(['display', '59'])
+			evalString('(action_digit 9)', env)
+			expect(env.display).toBe('59')
+			expect(env.waitingForOperand).toBe(false)
 		})
 
 		it('action_digit starts fresh when waiting', () => {
-			// Setup: waitingForOperand=true
-			const testEnv = createTestEnv({
+			assignState({
 				display: '0',
 				waitingForOperand: true,
-				context: { digit: 9 } as Value,
 			})
-			const result = evalString('(action_digit)', testEnv) as UpdateList
-			// Should set display to "9" and stop waiting
-			expect(result).toContainEqual(['display', '9'])
-			expect(result).toContainEqual(['waitingForOperand', false])
+			evalString('(action_digit 9)', env)
+			expect(env.display).toBe('9')
+			expect(env.waitingForOperand).toBe(false)
+		})
+
+		it('action_decimal adds decimal when waiting', () => {
+			assignState({
+				display: '0',
+				waitingForOperand: true,
+			})
+			evalString('(action_decimal)', env)
+			expect(env.display).toBe('0.')
+			expect(env.waitingForOperand).toBe(false)
+		})
+
+		it('action_decimal adds decimal to existing number', () => {
+			assignState({
+				display: '42',
+				waitingForOperand: false,
+			})
+			evalString('(action_decimal)', env)
+			expect(env.display).toBe('42.')
+		})
+
+		it('action_decimal does not add second decimal', () => {
+			assignState({
+				display: '3.14',
+				waitingForOperand: false,
+			})
+			evalString('(action_decimal)', env)
+			expect(env.display).toBe('3.14')
 		})
 
 		it('action_clear resets calculator', () => {
-			const testEnv = createTestEnv()
-			const result = evalString('(action_clear)', testEnv) as UpdateList
-			expect(result).toContainEqual(['display', '0'])
-			expect(result).toContainEqual(['operator', ''])
+			assignState({
+				display: '10',
+				memory: '5',
+				operator: '*',
+				waitingForOperand: false,
+				history: '10 *',
+			})
+			evalString('(action_clear)', env)
+			expect(env.display).toBe('0')
+			expect(env.operator).toBe('')
+			expect(env.memory).toBe('0')
+			expect(env.waitingForOperand).toBe(true)
+			expect(env.history).toBe('')
+		})
+
+		it('action_negate negates positive number', () => {
+			assignState({
+				display: '5',
+			})
+			evalString('(action_negate)', env)
+			expect(env.display).toBe('-5')
+		})
+
+		it('action_negate negates negative number', () => {
+			assignState({
+				display: '-5',
+			})
+			evalString('(action_negate)', env)
+			expect(env.display).toBe('5')
+		})
+
+		it('action_negate does not negate zero', () => {
+			assignState({
+				display: '0',
+			})
+			evalString('(action_negate)', env)
+			expect(env.display).toBe('0')
+		})
+
+		it('action_percent converts to percentage', () => {
+			assignState({
+				display: '50',
+			})
+			evalString('(action_percent)', env)
+			expect(env.display).toBe('0.5')
 		})
 
 		it('action_operator stores first operand', () => {
-			const testEnv = createTestEnv({
+			assignState({
 				display: '5',
 				memory: '0',
 				operator: '',
 				waitingForOperand: false,
-				context: { op: '+' } as Value,
 			})
-			const result = evalString('(action_operator)', testEnv) as UpdateList
-			expect(result).toContainEqual(['memory', '5'])
-			expect(result).toContainEqual(['operator', '+'])
-			expect(result).toContainEqual(['waitingForOperand', true])
+			evalString('(action_operator "+")', env)
+			expect(env.memory).toBe('5')
+			expect(env.operator).toBe('+')
+			expect(env.waitingForOperand).toBe(true)
+			expect(env.history).toBe('5 +')
+		})
+
+		it('action_operator performs chained calculation', () => {
+			assignState({
+				display: '5',
+				memory: '10',
+				operator: '+',
+				waitingForOperand: false,
+				history: '10 +',
+			})
+			evalString('(action_operator "*")', env)
+			expect(env.display).toBe('15')
+			expect(env.memory).toBe('15')
+			expect(env.operator).toBe('*')
+			expect(env.waitingForOperand).toBe(true)
+			expect(env.history).toBe('15 *')
 		})
 
 		it('action_equals calculates result', () => {
-			// Setup: 5 + 3 =
-			const testEnv = createTestEnv({
+			assignState({
 				display: '3',
 				memory: '5',
 				operator: '+',
 				waitingForOperand: false,
 				history: '5 +',
 			})
-			const result = evalString('(action_equals)', testEnv) as UpdateList
-			// Should calculate 5 + 3 = 8
-			expect(result).toContainEqual(['display', '8'])
+			evalString('(action_equals)', env)
+			expect(env.display).toBe('8')
+			expect(env.operator).toBe('')
+			expect(env.memory).toBe('0')
+			expect(env.history).toBe('5 + 3 = 8')
 		})
 
 		it('action_equals with multiplication', () => {
-			// Setup: 6 * 7 =
-			const testEnv = createTestEnv({
+			assignState({
 				display: '7',
 				memory: '6',
 				operator: '*',
 				waitingForOperand: false,
 				history: '6 *',
 			})
-			const result = evalString('(action_equals)', testEnv) as UpdateList
-			// Should calculate 6 * 7 = 42
-			expect(result).toContainEqual(['display', '42'])
+			evalString('(action_equals)', env)
+			expect(env.display).toBe('42')
+			expect(env.history).toBe('6 * 7 = 42')
+		})
+
+		it('action_equals with subtraction', () => {
+			assignState({
+				display: '3',
+				memory: '10',
+				operator: '-',
+				waitingForOperand: false,
+				history: '10 -',
+			})
+			evalString('(action_equals)', env)
+			expect(env.display).toBe('7')
+			expect(env.history).toBe('10 - 3 = 7')
+		})
+
+		it('action_equals with division', () => {
+			assignState({
+				display: '4',
+				memory: '20',
+				operator: '/',
+				waitingForOperand: false,
+				history: '20 /',
+			})
+			evalString('(action_equals)', env)
+			expect(env.display).toBe('5')
+			expect(env.history).toBe('20 / 4 = 5')
+		})
+
+		it('action_equals does nothing without operator', () => {
+			assignState({
+				display: '42',
+				memory: '0',
+				operator: '',
+				waitingForOperand: false,
+				history: '',
+			})
+			evalString('(action_equals)', env)
+			expect(env.display).toBe('42')
+			expect(env.history).toBe('')
 		})
 	})
 
 	describe('Full Calculation Flow', () => {
 		it('calculates 5 + 3 = 8', () => {
-			// Simulate: 5 + 3 =
-			const state: Record<string, Value> = {
-				display: '0',
-				memory: '0',
-				operator: '',
-				waitingForOperand: true,
-				history: '',
-			}
+			evalString('(action_digit 5)', env)
+			expect(env.display).toBe('5')
 
-			// Press 5
-			let testEnv = createTestEnv({ ...state, context: { digit: 5 } })
-			let result = evalString('(action_digit)', testEnv) as UpdateList
-			for (const [key, value] of result) {
-				state[key] = value
-			}
+			evalString('(action_operator "+")', env)
+			expect(env.waitingForOperand).toBe(true)
 
-			// Press +
-			testEnv = createTestEnv({ ...state, context: { op: '+' } })
-			result = evalString('(action_operator)', testEnv) as UpdateList
-			for (const [key, value] of result) {
-				state[key] = value
-			}
+			evalString('(action_digit 3)', env)
+			expect(env.display).toBe('3')
 
-			// Press 3
-			testEnv = createTestEnv({ ...state, context: { digit: 3 } })
-			result = evalString('(action_digit)', testEnv) as UpdateList
-			for (const [key, value] of result) {
-				state[key] = value
-			}
+			evalString('(action_equals)', env)
+			expect(env.display).toBe('8')
+			expect(env.history).toBe('5 + 3 = 8')
+		})
 
-			// Press =
-			testEnv = createTestEnv({ ...state, context: {} })
-			result = evalString('(action_equals)', testEnv) as UpdateList
+		it('calculates 12.5 * 4 = 50', () => {
+			evalString('(action_digit 1)', env)
+			evalString('(action_digit 2)', env)
+			evalString('(action_decimal)', env)
+			evalString('(action_digit 5)', env)
+			expect(env.display).toBe('12.5')
 
-			// Find display in result
-			const displayUpdate = result.find(([k]: UpdateEntry) => k === 'display')
-			expect(displayUpdate).toBeDefined()
-			expect(displayUpdate[1]).toBe('8')
+			evalString('(action_operator "*")', env)
+
+			evalString('(action_digit 4)', env)
+			evalString('(action_equals)', env)
+			expect(env.display).toBe('50')
+		})
+
+		it('calculates chained operations: 10 + 5 * 2 = 30', () => {
+			// Start with 10
+			evalString('(action_digit 1)', env)
+			evalString('(action_digit 0)', env)
+			expect(env.display).toBe('10')
+
+			// + 5 (intermediate result: 15)
+			evalString('(action_operator "+")', env)
+			evalString('(action_digit 5)', env)
+
+			// * 2 (triggers 10 + 5 = 15, then sets up * operation)
+			evalString('(action_operator "*")', env)
+			expect(env.display).toBe('15')
+
+			// = (calculates 15 * 2 = 30)
+			evalString('(action_digit 2)', env)
+			evalString('(action_equals)', env)
+			expect(env.display).toBe('30')
+		})
+
+		it('handles negate and percent in calculation', () => {
+			evalString('(action_digit 5)', env)
+			evalString('(action_digit 0)', env)
+			evalString('(action_percent)', env)
+			expect(env.display).toBe('0.5')
+
+			evalString('(action_negate)', env)
+			expect(env.display).toBe('-0.5')
+		})
+
+		it('handles clear during calculation', () => {
+			evalString('(action_digit 5)', env)
+			evalString('(action_operator "+")', env)
+			evalString('(action_digit 3)', env)
+			evalString('(action_clear)', env)
+
+			expect(env.display).toBe('0')
+			expect(env.operator).toBe('')
+			expect(env.memory).toBe('0')
+			expect(env.history).toBe('')
 		})
 	})
 })

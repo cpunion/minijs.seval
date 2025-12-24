@@ -37,7 +37,7 @@
 		"url": "https://github.com/cpunion/minijs.seval.git"
 	},
 	"dependencies": {
-		"seval.js": "^1.1.1"
+		"seval.js": "file:../seval.js"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",

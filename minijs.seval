@@ -93,6 +93,10 @@
            "token" (cond ((= name "true") (make-token "Boolean" true))
                          ((= name "false") (make-token "Boolean" false))
                          ((= name "null") (make-token "Null" null))
+                         ((= name "if") (make-token "If" "if"))
+                         ((= name "elif") (make-token "Elif" "elif"))
+                         ((= name "else") (make-token "Else" "else"))
+                         ((= name "for") (make-token "For" "for"))
                          (else (make-token "Identifier" name)))))))
 
 (define (read-id-chars src pos)
@@ -150,6 +154,7 @@
       ((= ch "[") (obj "end" (+ pos 1) "token" (make-token "LeftBracket" "[")))
       ((= ch "]") (obj "end" (+ pos 1) "token" (make-token "RightBracket" "]")))
       ((= ch ",") (obj "end" (+ pos 1) "token" (make-token "Comma" ",")))
+      ((= ch ";") (obj "end" (+ pos 1) "token" (make-token "Semicolon" ";")))
       (else (obj "end" (+ pos 1) "token" (make-token "Unknown" ch))))))
 
 (define (tokenize-loop src pos tokens)
@@ -209,15 +214,39 @@
 (define (make-property key value is-method params)
   (obj "key" key "value" value "method" is-method "params" params))
 
-(define (make-assignment name value)
-  (obj "type" "Assignment" "name" name "value" value))
+(define (make-assignment target value)
+  (obj "type" "Assignment" "target" target "value" value))
 
 (define (make-block statements)
   (obj "type" "Block" "statements" statements))
 
+(define (make-if-stmt test conseq alternate)
+  (obj "type" "IfStatement" "test" test "consequent" conseq "alternate" alternate))
+
+(define (make-for-stmt init test update body)
+  (obj "type" "ForStatement" "init" init "test" test "update" update "body" body))
+
 ;;; Parser state is (pos . ast)
 (define (parse-expr tokens pos)
-  (parse-ternary tokens pos))
+  (parse-assignment tokens pos))
+
+(define (assignment-target? node)
+  (let ((t (get node "type")))
+    (or (= t "Identifier") (= t "Member"))))
+
+(define (parse-assignment tokens pos)
+  (let ((left-result (parse-ternary tokens pos)))
+    (let ((left (first left-result))
+          (pos2 (first (rest left-result))))
+      (if (and (< pos2 (length tokens))
+               (= (token-value (current-token tokens pos2)) "=")
+               (or (>= (+ pos2 1) (length tokens))
+                   (!= (token-value (current-token tokens (+ pos2 1))) "="))
+               (assignment-target? left))
+          (let ((value-result (parse-assignment tokens (+ pos2 1))))
+            (list (make-assignment left (first value-result))
+                  (first (rest value-result))))
+          left-result))))
 
 (define (parse-ternary tokens pos)
   (let ((left-result (parse-or tokens pos)))
@@ -483,7 +512,7 @@
             (else
              (list (make-property name (make-literal null) false (list)) (+ pos 1))))))))
 
-;;; Parse method parameters: a, b, c)
+;;; Parse method parameters: a, b, c
 (define (parse-method-params tokens pos)
   (if (= (token-type (current-token tokens pos)) "RightParen")
       (list (list) (+ pos 1))
@@ -529,22 +558,82 @@
              (pos2 (first (rest stmt-result))))
          (parse-statements tokens pos2 (append stmts stmt)))))))
 
-;;; Parse a single statement: may be assignment (x = expr) or expression
 (define (parse-statement tokens pos)
   (let ((tok (current-token tokens pos)))
-    ; Check for assignment: identifier = expr
-    (if (and (= (token-type tok) "Identifier")
-             (< (+ pos 1) (length tokens))
-             (= (token-value (current-token tokens (+ pos 1))) "=")
-             (!= (token-value (current-token tokens (+ pos 2))) "="))
-        ; Assignment: name = value
-        (let ((name (token-value tok))
-              (value-result (parse-expr tokens (+ pos 2))))
-          (let ((value (first value-result))
-                (pos2 (first (rest value-result))))
-            (list (make-assignment name value) pos2)))
-        ; Regular expression
-        (parse-expr tokens pos))))
+    (cond
+      ((= (token-type tok) "If")
+       (parse-if-statement tokens pos))
+      ((= (token-type tok) "For")
+       (parse-for-statement tokens pos))
+      (else
+       (parse-expr tokens pos)))))
+
+(define (parse-if-statement tokens pos)
+  (let ((cond-result (parse-expr tokens (+ pos 1))))
+    (let ((cond-expr (first cond-result))
+          (pos2 (first (rest cond-result))))
+      (if (!= (token-type (current-token tokens pos2)) "LeftBrace")
+          (list (make-literal null) pos2)
+          (let ((body-result (parse-method-body tokens (+ pos2 1))))
+            (let ((body (first body-result))
+                  (pos3 (first (rest body-result))))
+              (let ((alt-result (parse-if-alternate tokens pos3)))
+                (list (make-if-stmt cond-expr body (first alt-result))
+                      (first (rest alt-result))))))))))
+
+(define (parse-if-alternate tokens pos)
+  (let ((tok (current-token tokens pos)))
+    (cond
+      ((= (token-type tok) "Elif")
+       (let ((cond-result (parse-expr tokens (+ pos 1))))
+         (let ((cond-expr (first cond-result))
+               (pos2 (first (rest cond-result))))
+           (if (!= (token-type (current-token tokens pos2)) "LeftBrace")
+               (list (make-literal null) pos2)
+               (let ((body-result (parse-method-body tokens (+ pos2 1))))
+                 (let ((body (first body-result))
+                       (pos3 (first (rest body-result))))
+                   (let ((alt (parse-if-alternate tokens pos3)))
+                     (list (make-if-stmt cond-expr body (first alt))
+                           (first (rest alt))))))))))
+      ((= (token-type tok) "Else")
+       (if (!= (token-type (current-token tokens (+ pos 1))) "LeftBrace")
+           (list (make-literal null) (+ pos 1))
+           (let ((body-result (parse-method-body tokens (+ pos 2))))
+             (list (first body-result)
+                   (first (rest body-result))))))
+      (else
+       (list (make-literal null) pos)))))
+
+(define (parse-for-statement tokens pos)
+  (let ((paren-pos (+ pos 1)))
+    (if (!= (token-type (current-token tokens paren-pos)) "LeftParen")
+        (list (make-literal null) paren-pos)
+        (let ((init-result (parse-for-segment tokens (+ paren-pos 1) "Semicolon" (make-literal null))))
+          (let ((init-expr (first init-result))
+                (pos2 (first (rest init-result))))
+            (let ((test-result (parse-for-segment tokens pos2 "Semicolon" (make-literal true))))
+              (let ((test-expr (first test-result))
+                    (pos3 (first (rest test-result))))
+                (let ((update-result (parse-for-segment tokens pos3 "RightParen" (make-literal null))))
+                  (let ((update-expr (first update-result))
+                        (pos4 (first (rest update-result))))
+                    (if (!= (token-type (current-token tokens pos4)) "LeftBrace")
+                        (list (make-literal null) pos4)
+                        (let ((body-result (parse-method-body tokens (+ pos4 1))))
+                          (let ((body (first body-result))
+                                (pos5 (first (rest body-result))))
+                            (list (make-for-stmt init-expr test-expr update-expr body) pos5)))))))))))))
+
+(define (parse-for-segment tokens pos stop-type default-value)
+  (if (= (token-type (current-token tokens pos)) stop-type)
+      (list default-value (+ pos 1))
+      (let ((expr-result (parse-expr tokens pos)))
+        (let ((expr (first expr-result))
+              (pos2 (first (rest expr-result))))
+          (if (= (token-type (current-token tokens pos2)) stop-type)
+              (list expr (+ pos2 1))
+              (list expr pos2))))))
 
 (define (parse src)
   (let ((tokens (tokenize src)))
@@ -554,6 +643,13 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Transformer - converts AST to S-expression
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define gensym-counter 0)
+
+(define (next-gensym prefix)
+  (progn
+    (define gensym-counter (+ gensym-counter 1))
+    (concat prefix (str gensym-counter))))
 
 (define (transform ast)
   (let ((type (get ast "type")))
@@ -566,7 +662,7 @@
              val)))
 
       ((= type "Identifier")
-       (get ast "name"))
+       (transform-identifier (get ast "name")))
 
       ((= type "Binary")
        (list (get ast "operator")
@@ -584,9 +680,7 @@
          (prepend args callee)))
 
       ((= type "Member")
-       (list "get"
-             (transform (get ast "object"))
-             (transform (get ast "property"))))
+       (transform-member-access ast))
 
       ((= type "Conditional")
        (list "if"
@@ -609,10 +703,76 @@
        (prepend (map (lambda (s) (transform s)) (get ast "statements")) "progn"))
 
       ((= type "Assignment")
-       (list "define" (get ast "name") (transform (get ast "value"))))
+       (transform-assignment (get ast "target") (transform (get ast "value"))))
+
+      ((= type "IfStatement")
+       (transform-if-statement ast))
+
+      ((= type "ForStatement")
+       (transform-for-statement ast))
 
       (else null))))
 
+(define (transform-identifier name)
+  name)
+
+(define (member-static-key prop)
+  (if (= (get prop "type") "Identifier")
+      (list "quote" (get prop "name"))
+      (transform prop)))
+
+(define (transform-member-access ast)
+  (let ((obj (transform (get ast "object")))
+        (prop (get ast "property"))
+        (computed (get ast "computed")))
+    (if computed
+        (list "get" obj (transform prop))
+        (list "get" obj (member-static-key prop)))))
+
+(define (transform-assignment target value)
+  (let ((t (get target "type")))
+    (cond
+      ((= t "Identifier")
+       (list "define" (get target "name") value))
+      ((= t "Member")
+       (transform-member-assignment target value))
+      (else
+       (list "define" (transform target) value)))))
+
+(define (transform-member-assignment node value)
+  (let ((object (get node "object"))
+        (prop (get node "property"))
+        (computed (get node "computed")))
+    (let ((obj-name (transform object)))
+      (list "define"
+            obj-name
+            (list "set"
+                  obj-name
+                    (if computed
+                        (transform prop)
+                        (member-static-key prop))
+                    value)))))
+
+(define (transform-if-statement node)
+  (list "if"
+        (transform (get node "test"))
+        (transform (get node "consequent"))
+        (transform (get node "alternate"))))
+
+(define (transform-for-statement node)
+  (let ((loop (next-gensym "__for_loop")))
+    (list "progn"
+          (transform (get node "init"))
+          (list "define"
+                (list loop)
+                (list "if"
+                      (transform (get node "test"))
+                      (list "progn"
+                            (transform (get node "body"))
+                            (transform (get node "update"))
+                            (list loop))
+                      null))
+          (list loop))))
 ;;; Transform object properties to progn with defines
 (define (transform-object props)
   (let ((defines (map transform-property props)))

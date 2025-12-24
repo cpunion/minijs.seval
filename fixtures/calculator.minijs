@@ -1,4 +1,10 @@
 {
+  display: "0",
+  memory: "0",
+  operator: "",
+  waitingForOperand: true,
+  history: "",
+
   hasDecimal(s) { strContains(str(s), ".") },
   negateStr(s) { s == "0" ? "0" : strStartsWith(s, "-") ? substr(s, 1) : "-" + s },
   formatNum(n) { str(round(n * 1000000000) / 1000000000) },
@@ -12,35 +18,67 @@
     )
   },
 
-  action_digit() {
-    waitingForOperand
-      ? [["display", str(get(context, "digit"))], ["waitingForOperand", false]]
-      : [["display", display + str(get(context, "digit"))]]
+  action_digit(digit) {
+    if waitingForOperand {
+      display = str(digit)
+      waitingForOperand = false
+    } else {
+      display = display + str(digit)
+    }
   },
 
   action_decimal() {
-    waitingForOperand
-      ? [["display", "0."], ["waitingForOperand", false]]
-      : hasDecimal(display) ? [] : [["display", display + "."]]
+    if waitingForOperand {
+      display = "0."
+      waitingForOperand = false
+    } elif !hasDecimal(display) {
+      display = display + "."
+    }
   },
 
   action_clear() {
-    [["display", "0"], ["memory", "0"], ["operator", ""], ["waitingForOperand", true], ["history", ""]]
+    display = "0"
+    memory = "0"
+    operator = ""
+    waitingForOperand = true
+    history = ""
   },
 
-  action_negate() { [["display", negateStr(display)]] },
+  action_negate() {
+    display = negateStr(display)
+  },
 
-  action_percent() { [["display", formatNum(parseNum(display) / 100)]] },
+  action_percent() {
+    display = formatNum(parseNum(display) / 100)
+  },
 
-  action_operator() {
-    operator == ""
-      ? [["memory", display], ["operator", get(context, "op")], ["waitingForOperand", true], ["history", display + " " + get(context, "op")]]
-      : [["display", calcOp(operator, memory, display)], ["memory", calcOp(operator, memory, display)], ["operator", get(context, "op")], ["waitingForOperand", true], ["history", calcOp(operator, memory, display) + " " + get(context, "op")]]
+  action_operator(op) {
+    if operator == "" {
+      memory = display
+      operator = op
+      waitingForOperand = true
+      history = display + " " + op
+    } else {
+      result = calcOp(operator, memory, display)
+      display = result
+      memory = result
+      operator = op
+      waitingForOperand = true
+      history = result + " " + op
+    }
   },
 
   action_equals() {
-    operator == ""
-      ? []
-      : [["display", calcOp(operator, memory, display)], ["memory", "0"], ["operator", ""], ["waitingForOperand", true], ["history", history + " " + display + " = " + calcOp(operator, memory, display)]]
+    if operator == "" {
+      // no-op when operator missing
+    } else {
+      operand = display
+      result = calcOp(operator, memory, display)
+      display = result
+      memory = "0"
+      operator = ""
+      waitingForOperand = true
+      history = history + " " + operand + " = " + result
+    }
   }
 }
