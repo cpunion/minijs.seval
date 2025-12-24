@@ -6,7 +6,12 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (is-whitespace ch)
-  (or (= ch " ") (= ch "\t") (= ch "\n") (= ch "\r")))
+  (cond ((= ch "r") false)
+        ((= ch " ") true)
+        ((= ch "\t") true)
+        ((= ch "\n") true)
+        ((= ch "\r") true)
+        (else false)))
 
 (define (is-digit ch)
   (and (>= ch "0") (<= ch "9")))

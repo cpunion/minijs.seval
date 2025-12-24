@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { createEvaluator } from '../seval.js/src/index'
+import { createEvaluator } from 'seval.js'
 
 const minijsSeval = fs.readFileSync(path.join(import.meta.dir, 'minijs.seval'), 'utf-8')
 const { evalString } = createEvaluator({ maxDepth: 10000 })
