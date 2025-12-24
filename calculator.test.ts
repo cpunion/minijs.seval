@@ -17,10 +17,7 @@ import {
 } from 'seval.js'
 
 const minijsSeval = fs.readFileSync(path.join(__dirname, 'minijs.seval'), 'utf-8')
-const calculatorCode = fs.readFileSync(
-	path.join(__dirname, 'fixtures/calculator.minijs'),
-	'utf-8',
-)
+const calculatorCode = fs.readFileSync(path.join(__dirname, 'fixtures/calculator.minijs'), 'utf-8')
 
 // Custom primitives that calculator.minijs depends on
 
